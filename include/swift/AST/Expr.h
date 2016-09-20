@@ -81,13 +81,8 @@ enum class CheckedCastKind : unsigned {
   ArrayDowncast,
   // A downcast from a dictionary type to another dictionary type.
   DictionaryDowncast,
-  // A downcast from a dictionary type to another dictionary type that
-  // requires bridging.
-  DictionaryDowncastBridged,
   // A downcast from a set type to another set type.
   SetDowncast,
-  // A downcast from a set type to another set type that requires bridging.
-  SetDowncastBridged,
   /// A downcast from an object of class or Objective-C existential
   /// type to its bridged value type.
   BridgeFromObjectiveC,
@@ -392,9 +387,8 @@ class alignas(8) Expr {
   class CollectionUpcastConversionExprBitfields {
     friend class CollectionUpcastConversionExpr;
     unsigned : NumExprBits;
-    unsigned BridgesToObjC : 1;
   };
-  enum { NumCollectionUpcastConversionExprBits = NumExprBits + 1 };
+  enum { NumCollectionUpcastConversionExprBits = NumExprBits + 0 };
   static_assert(NumCollectionUpcastConversionExprBits <= 32, "fits in an unsigned");
 
   class ObjCSelectorExprBitfields {
@@ -544,11 +538,6 @@ public:
   /// children, and if there is a closure within the expression, this does not
   /// walk into the body of it (unless it is single-expression).
   void forEachChildExpr(const std::function<Expr*(Expr*)> &callback);
-
-  /// findExistingInitializerContext - Given that this expression is
-  /// an initializer that belongs in some sort of Initializer
-  /// context, look through it for any existing context object.
-  Initializer *findExistingInitializerContext();
 
   /// Determine whether this expression refers to a type by name.
   ///
@@ -1421,7 +1410,11 @@ protected:
 
 public:
   ArrayRef<ValueDecl*> getDecls() const { return Decls; }
-  
+
+  void setDecls(ArrayRef<ValueDecl *> domain) {
+    Decls = domain;
+  }
+
   /// getBaseType - Determine the type of the base object provided for the
   /// given overload set, which is only non-null when dealing with an overloaded
   /// member reference.
@@ -1760,7 +1753,7 @@ public:
 /// bar.foo.  These always have unresolved type.
 class UnresolvedMemberExpr final
     : public Expr,
-      public TrailingCallArguments<UnresolvedMemberExpr>  {
+      public TrailingCallArguments<UnresolvedMemberExpr> {
   SourceLoc DotLoc;
   DeclNameLoc NameLoc;
   DeclName Name;
@@ -2938,19 +2931,12 @@ private:
 public:
   CollectionUpcastConversionExpr(Expr *subExpr, Type type,
                                  ConversionPair keyConversion,
-                                 ConversionPair valueConversion,
-                                 bool bridgesToObjC)
+                                 ConversionPair valueConversion)
     : ImplicitConversionExpr(
         ExprKind::CollectionUpcastConversion, subExpr, type),
       KeyConversion(keyConversion), ValueConversion(valueConversion) {
     assert((!KeyConversion || ValueConversion)
            && "key conversion without value conversion");
-    CollectionUpcastConversionExprBits.BridgesToObjC = bridgesToObjC;
-  }
-
-  /// Whether this upcast bridges the source elements to Objective-C.
-  bool bridgesToObjC() const {
-    return CollectionUpcastConversionExprBits.BridgesToObjC;
   }
 
   /// Returns the expression that should be used to perform a
@@ -4284,7 +4270,7 @@ public:
   }
   SourceLoc getEndLoc() const {
     if (!isFolded()) return EqualLoc;
-    return Src->getEndLoc();
+    return (Src->isImplicit() ? Dest->getEndLoc() : Src->getEndLoc());
   }
   
   /// True if the node has been processed by binary expression folding.
@@ -4295,29 +4281,6 @@ public:
   }
 };
 
-/// \brief An expression that describes the use of a default value, which may
-/// come from the default argument of a function type or member initializer.
-///
-/// This expression is synthesized by type checking and cannot be written
-/// directly by the user.
-class DefaultValueExpr : public Expr {
-  Expr *subExpr;
-
-public:
-  explicit DefaultValueExpr(Expr *subExpr)
-    : Expr(ExprKind::DefaultValue, /*Implicit=*/true, subExpr->getType()),
-      subExpr(subExpr) { }
-
-  Expr *getSubExpr() const { return subExpr; }
-  void setSubExpr(Expr *sub) { subExpr = sub; }
-  
-  SourceRange getSourceRange() const { return SourceRange(); }
-
-  static bool classof(const Expr *E) {
-    return E->getKind() == ExprKind::DefaultValue;
-  }
-};
-  
 /// \brief A pattern production that has been parsed but hasn't been resolved
 /// into a complete pattern. Name binding converts these into standalone pattern
 /// nodes or raises an error if a pattern production appears in an invalid

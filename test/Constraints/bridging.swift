@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -parse -verify %s -enable-id-as-any
+// RUN: %target-swift-frontend -parse -verify %s
 
 // REQUIRES: objc_interop
 
@@ -62,7 +62,7 @@ struct BridgedStruct : Hashable, _ObjectiveCBridgeable {
 
   static func _unconditionallyBridgeFromObjectiveC(_ source: BridgedClass?)
       -> BridgedStruct {
-    var result: BridgedStruct? = nil
+    var result: BridgedStruct?
     _forceBridgeFromObjectiveC(source!, result: &result)
     return result!
   }

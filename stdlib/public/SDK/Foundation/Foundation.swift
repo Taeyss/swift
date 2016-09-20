@@ -158,11 +158,6 @@ internal func _swift_Foundation_TypePreservingNSNumberWithCGFloat(
   _ value: CGFloat
 ) -> NSNumber
 
-@_silgen_name("_swift_Foundation_TypePreservingNSNumberWithBool")
-internal func _swift_Foundation_TypePreservingNSNumberWithBool(
-  _ value: Bool
-) -> NSNumber
-
 @_silgen_name("_swift_Foundation_TypePreservingNSNumberGetKind")
 internal func _swift_Foundation_TypePreservingNSNumberGetKind(
   _ value: NSNumber
@@ -203,11 +198,6 @@ internal func _swift_Foundation_TypePreservingNSNumberGetAsDouble(
 internal func _swift_Foundation_TypePreservingNSNumberGetAsCGFloat(
   _ value: NSNumber
 ) -> CGFloat
-
-@_silgen_name("_swift_Foundation_TypePreservingNSNumberGetAsBool")
-internal func _swift_Foundation_TypePreservingNSNumberGetAsBool(
-  _ value: NSNumber
-) -> Bool
 
 // Conversions between NSNumber and various numeric types. The
 // conversion to NSNumber is automatic (auto-boxing), while conversion
@@ -348,7 +338,7 @@ extension Bool: _ObjectiveCBridgeable {
 
   @_semantics("convertToObjectiveC")
   public func _bridgeToObjectiveC() -> NSNumber {
-    return _swift_Foundation_TypePreservingNSNumberWithBool(self)
+    return NSNumber(value: self)
   }
 
   public static func _forceBridgeFromObjectiveC(
@@ -456,7 +446,7 @@ extension NSNumber : _HasCustomAnyHashableRepresentation {
     case .CoreGraphicsCGFloat:
       return AnyHashable(_swift_Foundation_TypePreservingNSNumberGetAsCGFloat(self))
     case .SwiftBool:
-      return AnyHashable(_swift_Foundation_TypePreservingNSNumberGetAsBool(self))
+      return AnyHashable(self.boolValue)
     }
   }
 }
@@ -508,10 +498,6 @@ extension Array : _ObjectiveCBridgeable {
     _ source: NSArray,
     result: inout Array?
   ) {
-    _precondition(
-      Swift._isBridgedToObjectiveC(Element.self),
-      "array element type is not bridged to Objective-C")
-
     // If we have the appropriate native storage already, just adopt it.
     if let native =
         Array._bridgeFromObjectiveCAdoptingNativeStorageOf(source) {
@@ -935,23 +921,13 @@ extension Set : _ObjectiveCBridgeable {
   }
 }
 
-/*
-FIXME(id-as-any): uncomment this when we can cast NSSet to Set<AnyHashable>.
 extension NSSet : _HasCustomAnyHashableRepresentation {
   // Must be @nonobjc to avoid infinite recursion during bridging
   @nonobjc
   public func _toCustomAnyHashable() -> AnyHashable? {
-    var builder = _SetBuilder<Element>(count: s!.count)
-    // FIXME(id-as-any): how to get the Hashable conformance here?
-    s!.enumerateObjects({
-      (anyMember: Any, stop: UnsafeMutablePointer<ObjCBool>) in
-      builder.add(member: Swift._forceBridgeFromObjectiveC(
-        anyMember as AnyObject, Element.self))
-    })
-    return AnyHashable(self as Set<AnyHashable>)
+    return AnyHashable(self as! Set<AnyHashable>)
   }
 }
-*/
 
 extension NSDictionary : Sequence {
   // FIXME: A class because we can't pass a struct with class fields through an
@@ -1007,7 +983,12 @@ extension NSMutableDictionary {
     set {
       // FIXME: Unfortunate that the `NSCopying` check has to be done at
       // runtime.
-      self.setObject(newValue, forKey: key as AnyObject as! NSCopying)
+      let copyingKey = key as AnyObject as! NSCopying
+      if let newValue = newValue {
+        self.setObject(newValue, forKey: copyingKey)
+      } else {
+        self.removeObject(forKey: copyingKey)
+      }
     }
   }
 }
@@ -1031,7 +1012,7 @@ extension NSRange {
     length = x.count
   }
 
-  // FIXME(ABI)(compiler limitation): this API should be an extension on Range.
+  // FIXME(ABI)#75 (Conditional Conformance): this API should be an extension on Range.
   // Can't express it now because the compiler does not support conditional
   // extensions with type equality constraints.
   public func toRange() -> Range<Int>? {
@@ -1435,7 +1416,7 @@ extension NSCoder {
 
   @nonobjc
   public func decodeObject(of classes: [AnyClass]?, forKey key: String) -> Any? {
-    var classesAsNSObjects: NSSet? = nil
+    var classesAsNSObjects: NSSet?
     if let theClasses = classes {
       classesAsNSObjects = NSSet(array: theClasses.map { $0 as AnyObject })
     }
@@ -1493,8 +1474,8 @@ extension NSCoder {
   @nonobjc
   @available(OSX 10.11, iOS 9.0, *)
   public func decodeTopLevelObject(of classes: [AnyClass]?, forKey key: String) throws -> Any? {
-    var error: NSError? = nil
-    var classesAsNSObjects: NSSet? = nil
+    var error: NSError?
+    var classesAsNSObjects: NSSet?
     if let theClasses = classes {
       classesAsNSObjects = NSSet(array: theClasses.map { $0 as AnyObject })
     }

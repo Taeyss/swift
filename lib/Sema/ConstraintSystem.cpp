@@ -446,10 +446,8 @@ namespace {
         if (implArchetype->hasNestedType(member->getName())) {
           nestedType = implArchetype->getNestedType(member->getName());
           archetype = nestedType.getValue()->getAs<ArchetypeType>();
-        } else if (implArchetype->isSelfDerived()) {
-          archetype = implArchetype;
         }
-                                
+
         ConstraintLocator *locator;
         if (archetype) {
           locator = CS.getConstraintLocator(
@@ -837,7 +835,7 @@ static unsigned getNumRemovedArgumentLabels(ASTContext &ctx, ValueDecl *decl,
     // If this is a curried reference to an instance method, where 'self' is
     // being applied, e.g., "ClassName.instanceMethod(self)", remove the
     // argument labels from the resulting function type. The 'self' parameter is
-    // always unlabled, so this operation is a no-op for the actual application.
+    // always unlabeled, so this operation is a no-op for the actual application.
     return isCurriedInstanceReference ? func->getNumParameterLists() : 1;
 
   case FunctionRefKind::DoubleApply:
@@ -957,15 +955,10 @@ void ConstraintSystem::openGeneric(
        bool skipProtocolSelfConstraint,
        ConstraintLocatorBuilder locator,
        llvm::DenseMap<CanType, TypeVariableType *> &replacements) {
-  // Use the minimized constraints; we can re-derive solutions for all the
-  // implied constraints.
-  auto minimized =
-    signature->getCanonicalManglingSignature(*DC->getParentModule());
-
   openGeneric(innerDC,
               outerDC,
-              minimized->getGenericParams(),
-              minimized->getRequirements(),
+              signature->getGenericParams(),
+              signature->getRequirements(),
               skipProtocolSelfConstraint,
               locator,
               replacements);

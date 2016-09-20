@@ -97,7 +97,7 @@ public struct EnumerateTest {
 public struct FilterTest {
   public let expected: [Int]
   public let sequence: [Int]
-  public let includeElement: @escaping (Int) -> Bool
+  public let includeElement: (Int) -> Bool
   public let loc: SourceLoc
 
   public init(
@@ -136,10 +136,54 @@ public struct FindTest {
   }
 }
 
+public struct CollectionBinaryOperationTest {
+  public let expected: [MinimalEquatableValue]
+  public let lhs: [MinimalEquatableValue]
+  public let rhs: [MinimalEquatableValue]
+  public let loc: SourceLoc
+
+  public init(
+    expected: [Int], lhs: [Int], rhs: [Int],
+    file: String = #file, line: UInt = #line
+  ) {
+    self.expected = expected.enumerated().map {
+      return MinimalEquatableValue($1, identity: $0) 
+    }
+    self.lhs = lhs.map {
+      return MinimalEquatableValue($0, identity: $0) 
+    }
+    self.rhs = rhs.map {
+      return MinimalEquatableValue($0, identity: $0) 
+    }
+    self.loc = SourceLoc(file, line, comment: "test data")
+  }
+}
+
+public struct CollectionPredicateTest {
+  public let expected: Bool
+  public let lhs: [MinimalEquatableValue]
+  public let rhs: [MinimalEquatableValue]
+  public let loc: SourceLoc
+
+  public init(
+    expected: Bool, lhs: [Int], rhs: [Int],
+    file: String = #file, line: UInt = #line
+  ) {
+    self.expected = expected
+    self.lhs = lhs.enumerated().map {
+      return MinimalEquatableValue($1, identity: $0) 
+    }
+    self.rhs = rhs.enumerated().map {
+      return MinimalEquatableValue($1, identity: $0) 
+    }
+    self.loc = SourceLoc(file, line, comment: "test data")
+  }
+}
+
 public struct FlatMapTest {
   public let expected: [Int32]
   public let sequence: [Int]
-  public let transform: @escaping (Int) -> [Int32]
+  public let transform: (Int) -> [Int32]
   public let loc: SourceLoc
 
   public init(
@@ -158,7 +202,7 @@ public struct FlatMapTest {
 public struct FlatMapToOptionalTest {
   public let expected: [Int32]
   public let sequence: [Int]
-  public let transform: @escaping (Int) -> Int32?
+  public let transform: (Int) -> Int32?
   public let loc: SourceLoc
 
   public init(
@@ -224,7 +268,7 @@ public struct LexicographicallyPrecedesTest {
 public struct MapTest {
   public let expected: [Int32]
   public let sequence: [Int]
-  public let transform: @escaping (Int) -> Int32
+  public let transform: (Int) -> Int32
   public let loc: SourceLoc
 
   public init(
@@ -487,6 +531,32 @@ public let findTests = [
     element: 2020,
     sequence: [ 1010, 2020, 3030, 2020, 4040 ],
     expectedLeftoverSequence: [ 3030, 2020, 4040 ]),
+]
+
+public let unionTests = [
+  CollectionBinaryOperationTest(expected: [1, 2, 3, 4, 5], lhs: [1, 3, 5], rhs: [2, 4]),
+  CollectionBinaryOperationTest(expected: [3, 5], lhs: [3], rhs: [5])
+]
+
+public let intersectionTests = [
+  CollectionBinaryOperationTest(expected: [1, 5], lhs: [1, 3, 5], rhs: [1, 2, 5])
+]
+
+public let symmetricDifferenceTests = [
+  CollectionBinaryOperationTest(expected: [1, 3, 5], lhs: [1, 2, 3, 4], rhs: [2, 4, 5])
+]
+
+public let subtractTests = [
+  CollectionBinaryOperationTest(expected: [1, 3], lhs: [1, 2, 3, 4], rhs: [2, 4, 5])
+]
+
+public let subtractingTests = [
+  CollectionBinaryOperationTest(expected: [1, 3, 4], lhs: [1, 2, 3, 4, 5], rhs: [2, 5, 6, 7])
+]
+
+public let strictSupersetTests = [
+  CollectionPredicateTest(expected: true, lhs: [1, 2, 3, 4, 5, 6], rhs: [1, 2, 3, 4]),
+  CollectionPredicateTest(expected: false, lhs: [1, 2], rhs: [1, 2, 4])
 ]
 
 /// For a number of form `NNN_MMM`, returns an array of `NNN` numbers that all
@@ -1458,7 +1528,7 @@ extension TestSuite {
 
     makeSequenceOfEquatable: @escaping ([SequenceWithEquatableElement.Iterator.Element]) -> SequenceWithEquatableElement,
     wrapValueIntoEquatable: @escaping (MinimalEquatableValue) -> SequenceWithEquatableElement.Iterator.Element,
-    extractValueFromEquatable: ((SequenceWithEquatableElement.Iterator.Element) -> MinimalEquatableValue),
+    extractValueFromEquatable: @escaping ((SequenceWithEquatableElement.Iterator.Element) -> MinimalEquatableValue),
 
     resiliencyChecks: CollectionMisuseResiliencyChecks = .all
   ) where
@@ -1860,15 +1930,15 @@ self.test("\(testNamePrefix)._preprocessingPass/semantics") {
     if wasInvoked {
       expectOptionalEqual(42, result?.value)
     } else {
-      expectEmpty(result)
+      expectNil(result)
     }
   }
 
   for test in forEachTests {
     let s = makeWrappedSequence(test.sequence.map(OpaqueValue.init))
     var wasInvoked = false
-    var caughtError: Error? = nil
-    var result: OpaqueValue<Int>? = nil
+    var caughtError: Error?
+    var result: OpaqueValue<Int>?
     do {
       result = try s._preprocessingPass {
         (sequence) -> OpaqueValue<Int> in
@@ -1878,7 +1948,7 @@ self.test("\(testNamePrefix)._preprocessingPass/semantics") {
     } catch {
       caughtError = error
     }
-    expectEmpty(result)
+    expectNil(result)
     if wasInvoked {
       expectOptionalEqual(TestError.error2, caughtError as? TestError)
     }

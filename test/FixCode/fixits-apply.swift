@@ -1,8 +1,6 @@
 // RUN: not %swift -parse -target %target-triple %s -emit-fixits-path %t.remap -I %S/Inputs
 // RUN: c-arcmt-test %t.remap | arcmt-test -verify-transformed-files %s.result
 
-// REQUIRES: objc_interop
-
 class Base {}
 class Derived : Base {}
 
@@ -120,7 +118,7 @@ func baz(var x: Int) {
   x += 10
 }
 func foo(let y: String, inout x: Int) {
-  
+
 }
 
 struct Test1 : OptionSet {
@@ -264,11 +262,16 @@ disable_unnamed_param_reorder(0, "") // no change.
 
 prefix operator ***** {}
 
-func foo(an : Any) {
-  let a1 : AnyObject
-  a1 = an
-  let a2 : AnyObject?
-  a2 = an
-  let a3 : AnyObject!
-  a3 = an
+class BoolFoo : BooleanType {
+  var boolValue: Bool {return false}
 }
+func testBoolValue(a : BoolFoo) {
+  if a { }
+  guard a {}
+  if a as BoolFoo {}
+}
+
+protocol P1 {}
+protocol P2 {}
+var a : protocol<P1, P2>?
+var a2 : protocol<P1>= 17

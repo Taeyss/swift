@@ -19,6 +19,7 @@
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ForeignErrorConvention.h"
+#include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/TypeVisitor.h"
 #include "swift/Basic/STLExtras.h"
@@ -538,20 +539,22 @@ namespace {
       if (GenericTypeDecl *GTD = dyn_cast<GenericTypeDecl>(VD))
         printGenericParameters(OS, GTD->getGenericParams());
 
-      OS << " type='";
-      if (VD->hasType())
-        VD->getType().print(OS);
-      else
-        OS << "<null type>";
+      if (!VD->hasType() || !VD->getType()->is<PolymorphicFunctionType>()) {
+        OS << " type='";
+        if (VD->hasType())
+          VD->getType().print(OS);
+        else
+          OS << "<null type>";
+        OS << '\'';
+      }
 
       if (VD->hasInterfaceType() &&
           (!VD->hasType() ||
            VD->getInterfaceType().getPointer() != VD->getType().getPointer())) {
-        OS << "' interface type='";
+        OS << " interface type='";
         VD->getInterfaceType()->getCanonicalType().print(OS);
+        OS << '\'';
       }
-
-      OS << '\'';
 
       if (VD->hasAccessibility()) {
         OS << " access=";
@@ -831,7 +834,7 @@ namespace {
       
       if (auto init = P->getDefaultValue()) {
         OS << " expression=\n";
-        printRec(init->getExpr());
+        printRec(init);
       }
       
       OS << ')';
@@ -1518,7 +1521,7 @@ public:
     Indent -= 2;
   }
 
-  void printRecLabelled(Expr *E, StringRef label) {
+  void printRecLabeled(Expr *E, StringRef label) {
     Indent += 2;
     OS.indent(Indent);
     OS << '(' << label << '\n';
@@ -1936,17 +1939,15 @@ public:
   }
   void visitCollectionUpcastConversionExpr(CollectionUpcastConversionExpr *E) {
     printCommon(E, "collection_upcast_expr");
-    if (E->bridgesToObjC())
-      OS << " bridges_to_objc";
     OS << '\n';
     printRec(E->getSubExpr());
     if (auto keyConversion = E->getKeyConversion()) {
       OS << '\n';
-      printRecLabelled(keyConversion.Conversion, "key_conversion");
+      printRecLabeled(keyConversion.Conversion, "key_conversion");
     }
     if (auto valueConversion = E->getValueConversion()) {
       OS << '\n';
-      printRecLabelled(valueConversion.Conversion, "value_conversion");
+      printRecLabeled(valueConversion.Conversion, "value_conversion");
     }
     OS << ')';
   }
@@ -2210,11 +2211,6 @@ public:
     printRec(E->getThenExpr());
     OS << '\n';
     printRec(E->getElseExpr());
-    OS << ')';
-  }
-  void visitDefaultValueExpr(DefaultValueExpr *E) {
-    printCommon(E, "default_value_expr") << ' ';
-    printRec(E->getSubExpr());
     OS << ')';
   }
   void visitAssignExpr(AssignExpr *E) {
@@ -3093,4 +3089,12 @@ void TypeBase::dump(raw_ostream &os, unsigned indent) const {
   // Make sure to print type variables.
   llvm::SaveAndRestore<bool> X(ctx.LangOpts.DebugConstraintSolver, true);
   Type(const_cast<TypeBase *>(this)).dump(os, indent);
+}
+
+void GenericEnvironment::dump() const {
+  llvm::errs() << "Generic environment:\n";
+  for (auto pair : getInterfaceToArchetypeMap()) {
+    pair.first->dump();
+    pair.second->dump();
+  }
 }

@@ -82,14 +82,18 @@ NOTE(any_as_anyobject_fixit, none,
      "cast 'Any' to 'AnyObject' or use 'as!' to force downcast to a more specific type to access members", ())
 
 ERROR(expected_argument_in_contextual_member,none,
-      "contextual member %0 expects argument of type %1", (DeclName, Type))
+      "member %0 expects argument of type %1", (DeclName, Type))
+ERROR(expected_parens_in_contextual_member,none,
+      "member %0 is a function; did you mean to call it?", (DeclName))
 
 ERROR(expected_result_in_contextual_member,none,
       "member %0 in %2 produces result of type %1, but context expects %2",
       (DeclName, Type, Type))
 
 ERROR(unexpected_argument_in_contextual_member,none,
-      "contextual member %0 has no associated value", (DeclName))
+      "member %0 takes no arguments", (DeclName))
+ERROR(unexpected_parens_in_contextual_member,none,
+      "member %0 is not a function", (DeclName))
 
 ERROR(could_not_use_value_member,none,
       "member %1 cannot be used on value of type %0", (Type, DeclName))
@@ -686,6 +690,9 @@ NOTE(in_cast_expr_types,none,
       "in cast from type %0 to %1",
       (Type, Type))
 
+ERROR(types_not_convertible_use_bool_value,none,
+      "%0 is not convertible to %1; did you mean %0.boolValue", (Type, Type))
+
 ERROR(tuple_types_not_convertible_nelts,none,
       "%0 is not convertible to %1, "
       "tuples have a different number of elements", (Type, Type))
@@ -901,10 +908,6 @@ ERROR(attribute_requires_operator_identifier,none,
 ERROR(attribute_requires_single_argument,none,
       "'%0' requires a function with one argument", (StringRef))
 
-ERROR(inout_cant_be_variadic,none,
-      "inout arguments cannot be variadic", ())
-ERROR(inout_only_parameter,none,
-      "'inout' is only valid in parameter lists", ())
 ERROR(var_parameter_not_allowed,none,
       "parameters may not have the 'var' specifier", ())
 
@@ -1310,9 +1313,10 @@ ERROR(protocol_property_must_be_computed,none,
 NOTE(inherited_protocol_does_not_conform,none,
      "type %0 does not conform to inherited protocol %1", (Type, Type))
 NOTE(no_witnesses,none,
-     "protocol requires %select{initializer %1|function %1|property %1|"
-     "subscript}0 with type %2; do you want to add a stub?",
-     (RequirementKind, DeclName, Type))
+     "protocol requires "
+     "%select{initializer %1|function %1|property %1|subscript}0 with type %2"
+     "%select{|; do you want to add a stub?}3",
+     (RequirementKind, DeclName, Type, bool))
 NOTE(ambiguous_witnesses,none,
      "multiple matching "
      "%select{initializers named %1|functions named %1|properties named %1|"
@@ -1325,8 +1329,8 @@ NOTE(no_witnesses_type,none,
      "protocol requires nested type %0; do you want to add it?", (Identifier))
 NOTE(default_associated_type_req_fail,none,
      "default type %0 for associated type %1 (from protocol %2) "
-     "does not conform to %3",
-     (Type, DeclName, Type, Type))
+     "does not %select{inherit from|conform to}4 %3",
+     (Type, DeclName, Type, Type, bool))
 ERROR(associated_type_access,none,
       "associated type in "
       "%select{PRIVATE|a fileprivate|an internal|a public}0 protocol uses "
@@ -1339,8 +1343,8 @@ NOTE(bad_associated_type_deduction,none,
      (DeclName, DeclName))
 NOTE(associated_type_deduction_witness_failed,none,
      "inferred type %1 (by matching requirement %0) is invalid: "
-     "does not conform to %2",
-     (DeclName, Type, DeclName))
+     "does not %select{inherit from|conform to}3 %2",
+     (DeclName, Type, DeclName, bool))
 NOTE(ambiguous_associated_type_deduction,none,
      "ambiguous inference of associated type %0: %1 vs. %2",
      (DeclName, Type, Type))
@@ -1398,7 +1402,8 @@ NOTE(protocol_witness_not_objc,none,
 NOTE(protocol_witness_type,none,
      "possibly intended match", ())
 NOTE(protocol_witness_nonconform_type,none,
-     "possibly intended match %0 does not conform to %1", (Type, Type))
+     "possibly intended match %0 does not "
+     "%select{inherit from|conform to}2 %1", (Type, Type, bool))
 
 NOTE(protocol_requirement_here,none,
      "requirement %0 declared here", (DeclName))
@@ -1699,6 +1704,11 @@ ERROR(raw_type_not_literal_convertible,none,
 ERROR(enum_raw_type_not_equatable,none,
       "RawRepresentable 'init' cannot be synthesized because raw type %0 is not "
       "Equatable", (Type))
+ERROR(enum_raw_type_nonconforming_and_nonsynthable,none,
+      "%0 declares raw type %1, but does not conform to RawRepresentable "
+      "and conformance could not be synthesized", (Type, Type))
+NOTE(enum_declares_rawrep_with_raw_type,none,
+      "%0 declares raw type %1, which implies RawRepresentable", (Type, Type))
 ERROR(enum_raw_type_access,none,
       "enum %select{must be declared "
       "%select{private|fileprivate|internal|PUBLIC}2"
@@ -1827,10 +1837,12 @@ ERROR(property_behavior_invalid_parameter,none,
 // Type Check Attributes
 //------------------------------------------------------------------------------
 
-ERROR(attr_only_only_one_decl_kind,none,
+ERROR(attr_only_one_decl_kind,none,
       "%0 may only be used on '%1' declarations", (DeclAttribute,StringRef))
-ERROR(attr_only_only_on_parameters,none,
+ERROR(attr_only_on_parameters,none,
       "%0 may only be used on parameters", (StringRef))
+ERROR(attr_not_on_variadic_parameters,none,
+      "%0 may not be used on variadic parameters", (StringRef))
 
 
 ERROR(override_final,none,
@@ -1875,6 +1887,11 @@ ERROR(noescape_conflicts_escaping_autoclosure,none,
 
 ERROR(escaping_function_type,none,
       "@escaping may only be applied to parameters of function type", ())
+ERROR(escaping_non_function_parameter,none,
+      "@escaping attribute may only be used in function parameter position", ())
+
+NOTE(escaping_optional_type_argument, none,
+     "closure is already escaping in optional type argument", ())
 
 // NSManaged attribute
 ERROR(attr_NSManaged_not_instance_member,none,
@@ -2037,6 +2054,9 @@ ERROR(enumstruct_convenience_init,none,
 ERROR(nonclass_convenience_init,none,
       "convenience initializer not allowed in non-class type %0",
       (Type))
+ERROR(cfclass_convenience_init,none,
+      "convenience initializers are not supported in extensions of CF types",
+      ())
 
 ERROR(dynamic_construct_class,none,
       "constructing an object of class type %0 with a metatype value must use "
@@ -2099,10 +2119,10 @@ ERROR(optional_used_as_boolean,none,
      "test for '!= nil' instead", (Type))
 
 ERROR(interpolation_missing_proto,none,
-      "string interpolation requires the protocol 'ExpressibleByStringInterpolation' to be defined",
+      "string interpolation requires the protocol '_ExpressibleByStringInterpolation' to be defined",
       ())
 ERROR(interpolation_broken_proto,none,
-      "protocol 'ExpressibleByStringInterpolation' is broken",
+      "protocol '_ExpressibleByStringInterpolation' is broken",
       ())
 
 ERROR(object_literal_broken_proto,none,
@@ -2113,8 +2133,8 @@ ERROR(discard_expr_outside_of_assignment,none,
       ())
 ERROR(inout_expr_outside_of_call,none,
       "'&' can only appear immediately in a call argument list", ())
-ERROR(collection_literal_heterogenous,none,
-      "heterogenous collection literal could only be inferred to %0; add"
+ERROR(collection_literal_heterogeneous,none,
+      "heterogeneous collection literal could only be inferred to %0; add"
       " explicit type annotation if this is intentional", (Type))
 ERROR(collection_literal_empty,none,
       "empty collection literal requires an explicit type", ())
@@ -2213,6 +2233,10 @@ ERROR(ambiguous_decl_ref,none,
       "ambiguous use of %0", (DeclName))
 ERROR(ambiguous_operator_ref,none,
       "ambiguous use of operator %0", (DeclName))
+NOTE(ambiguous_because_of_trailing_closure,none,
+     "%select{use an explicit argument label instead of a trailing closure|"
+     "avoid using a trailing closure}0 to call %1",
+     (bool, DeclName))
 
 // Cannot capture inout-ness of a parameter
 // Partial application of foreign functions not supported
@@ -2697,6 +2721,8 @@ ERROR(sil_function_multiple_error_results,PointsToFirstBadToken,
       "SIL function types cannot have multiple @error results", ())
 ERROR(unsupported_sil_convention,none,
       "convention '%0' not supported in SIL", (StringRef))
+ERROR(illegal_sil_type,none,
+      "type %0 is not a legal SIL value type", (Type))
 
 // SIL Metatypes
 ERROR(sil_metatype_without_repr,none,
@@ -2729,6 +2755,10 @@ ERROR(objc_in_extension_context,none,
       "members of constrained extensions cannot be declared @objc", ())
 ERROR(objc_in_generic_extension,none,
       "@objc is not supported within extensions of generic classes", ())
+ERROR(objc_operator, none,
+      "operator methods cannot be declared @objc", ())
+ERROR(objc_operator_proto, none,
+      "@objc protocols may not have operator requirements", ())
 
 ERROR(objc_for_generic_class,none,
       "generic subclasses of '@objc' classes cannot have an explicit '@objc' "
@@ -3105,12 +3135,6 @@ WARNING(variable_never_mutated, none,
 WARNING(variable_never_read, none,
         "%select{variable|parameter}1 %0 was written to, but never read",
         (Identifier, unsigned))
-
-//------------------------------------------------------------------------------
-// Naming convention diagnostics
-//------------------------------------------------------------------------------
-WARNING(omit_needless_words, none,
-        "%0 could be named %1 [-Womit-needless-words]", (DeclName, DeclName))
 
 WARNING(extraneous_default_args_in_call, none,
         "call to %0 has extraneous arguments that could use defaults", 

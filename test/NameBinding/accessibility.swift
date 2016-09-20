@@ -1,9 +1,6 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: cp %s %t/main.swift
 
-// RUN: %target-swift-frontend -parse -primary-file %t/main.swift %S/Inputs/accessibility_other.swift -module-name accessibility -enable-source-import -I %S/Inputs -sdk "" -enable-access-control -verify
-// RUN: %target-swift-frontend -parse -primary-file %t/main.swift %S/Inputs/accessibility_other.swift -module-name accessibility -enable-source-import -I %S/Inputs -sdk "" -disable-access-control -D DEFINE_VAR_FOR_SCOPED_IMPORT -D ACCESS_DISABLED
-
 // RUN: %target-swift-frontend -emit-module -o %t %S/Inputs/has_accessibility.swift -D DEFINE_VAR_FOR_SCOPED_IMPORT -enable-testing
 // RUN: %target-swift-frontend -parse -primary-file %t/main.swift %S/Inputs/accessibility_other.swift -module-name accessibility -I %t -sdk "" -enable-access-control -verify
 // RUN: %target-swift-frontend -parse -primary-file %t/main.swift %S/Inputs/accessibility_other.swift -module-name accessibility -I %t -sdk "" -disable-access-control -D ACCESS_DISABLED
@@ -53,6 +50,15 @@ Foo.b()
 Foo.c() // expected-error {{'c' is inaccessible due to 'private' protection level}}
 
 _ = Foo() // expected-error {{'Foo' initializer is inaccessible due to 'internal' protection level}}
+
+// <rdar://problem/27982012> QoI: Poor diagnostic for inaccessible initializer
+struct rdar27982012 {
+  var x: Int
+  private init(_ x: Int) { self.x = x }
+}
+
+_ = { rdar27982012($0.0) }((1, 2)) // expected-error {{type of expression is ambiguous without more context}}
+
 // TESTABLE-NOT: :[[@LINE-1]]:{{[^:]+}}:
 _ = PrivateInit() // expected-error {{'PrivateInit' initializer is inaccessible due to 'private' protection level}}
 // TESTABLE: :[[@LINE-1]]:{{[^:]+}}: error: 'PrivateInit' initializer is inaccessible due to 'private' protection level
@@ -96,9 +102,9 @@ protocol MethodProto {
 }
 
 extension OriginallyEmpty : MethodProto {}
-// TESTABLE-NOT: :[[@LINE-1]]:{{[^:]+}}:
 #if !ACCESS_DISABLED
 extension HiddenMethod : MethodProto {} // expected-error {{type 'HiddenMethod' does not conform to protocol 'MethodProto'}}
+// TESTABLE-NOT: :[[@LINE-1]]:{{[^:]+}}:
 
 extension Foo : MethodProto {} // expected-error {{type 'Foo' does not conform to protocol 'MethodProto'}}
 #endif
@@ -154,3 +160,16 @@ private struct PrivateConformerByLocalTypeBad : TypeProto {
 }
 #endif
 
+public protocol Fooable {
+  func foo() // expected-note * {{protocol requires function 'foo()'}}
+}
+
+#if !ACCESS_DISABLED
+internal struct FooImpl: Fooable, HasDefaultImplementation {} // expected-error {{type 'FooImpl' does not conform to protocol 'Fooable'}}
+public struct PublicFooImpl: Fooable, HasDefaultImplementation {} // expected-error {{type 'PublicFooImpl' does not conform to protocol 'Fooable'}}
+// TESTABLE-NOT: method 'foo()'
+
+internal class TestableSub: InternalBase {} // expected-error {{undeclared type 'InternalBase'}}
+public class TestablePublicSub: InternalBase {} // expected-error {{undeclared type 'InternalBase'}}
+// TESTABLE-NOT: undeclared type 'InternalBase'
+#endif

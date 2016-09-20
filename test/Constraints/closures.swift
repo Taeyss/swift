@@ -175,7 +175,7 @@ func typeCheckMultiStmtClosureCrash() {
 }
 
 // SR-832 - both these should be ok
-func someFunc(_ foo: (@escaping (String) -> String)?, 
+func someFunc(_ foo: ((String) -> String)?,
               bar: @escaping (String) -> String) {
     let _: (String) -> String = foo != nil ? foo! : bar
     let _: (String) -> String = foo ?? bar
@@ -238,7 +238,7 @@ func ident<T>(_ t: T) -> T {}
 var c = ident({1.DOESNT_EXIST}) // error: expected-error {{value of type 'Int' has no member 'DOESNT_EXIST'}}
 
 // <rdar://problem/20712541> QoI: Int/UInt mismatch produces useless error inside a block
-var afterMessageCount : Int? = nil
+var afterMessageCount : Int?
 
 func uintFunc() -> UInt {}
 func takeVoidVoidFn(_ a : () -> ()) {}

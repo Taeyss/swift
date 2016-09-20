@@ -22,6 +22,7 @@
 #include "swift/AST/AnyFunctionRef.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/Types.h"
 #include "swift/SIL/PrettyStackTrace.h"
@@ -49,27 +50,22 @@ static llvm::cl::opt<bool> SkipUnreachableMustBeLastErrors(
 // prevent release builds from triggering spurious unused variable warnings.
 #ifndef NDEBUG
 
-/// Returns true if A is an opened existential type, Self, or is equal to an
-/// archetype in F's nested archetype list.
-///
-/// FIXME: Once Self has been removed in favor of opened existential types
-/// everywhere, remove support for self.
+/// Returns true if A is an opened existential type or is equal to an
+/// archetype from F's generic context.
 static bool isArchetypeValidInFunction(ArchetypeType *A, SILFunction *F) {
-  // The only two cases where an archetype is always legal in a function is if
-  // it is self or if it is from an opened existential type. Currently, Self is
-  // being migrated away from in favor of opened existential types, so we should
-  // remove the special case here for Self when that process is completed.
-  //
-  // *NOTE* Associated types of self are not valid here.
-  if (!A->getOpenedExistentialType().isNull() || A->getSelfProtocol())
+  if (!A->getOpenedExistentialType().isNull())
     return true;
 
-  // Ok, we have an archetype, make sure it is in the nested archetypes of our
-  // caller.
-  for (auto Iter : F->getContextGenericParams()->getAllNestedArchetypes())
-    if (A->isEqual(&*Iter))
+  // Find the primary archetype.
+  A = A->getPrimary();
+
+  // Ok, we have a primary archetype, make sure it is in the nested generic
+  // environment of our caller.
+  if (auto *genericEnv = F->getGenericEnvironment())
+    if (genericEnv->getArchetypeToInterfaceMap().count(A))
       return true;
-  return A->getIsRecursive();
+
+  return false;
 }
 
 namespace {
@@ -183,11 +179,7 @@ public:
                                                 const Twine &valueDescription) {
     require(value->getType().isObject(), valueDescription +" must be an object");
     
-    auto objectTy = value->getType();
-    OptionalTypeKind otk;
-    if (auto optObjTy = objectTy.getAnyOptionalObjectType(F.getModule(), otk)) {
-      objectTy = optObjTy;
-    }
+    auto objectTy = value->getType().unwrapAnyOptionalType();
     
     require(objectTy.isReferenceCounted(F.getModule()),
             valueDescription + " must have reference semantics");
@@ -241,8 +233,7 @@ public:
     auto getAnyOptionalObjectTypeInContext = [&](CanGenericSignature sig,
                                                  SILType type) {
       Lowering::GenericContextScope context(F.getModule().Types, sig);
-      OptionalTypeKind _;
-      return type.getAnyOptionalObjectType(F.getModule(), _);
+      return type.getAnyOptionalObjectType();
     };
 
     // TODO: More sophisticated param and return ABI compatibility rules could
@@ -580,13 +571,41 @@ public:
     }
   }
 
-  /// Check that the given type is a legal SIL value.
+  /// Check that the given type is a legal SIL value type.
   void checkLegalType(SILFunction *F, SILType type, SILInstruction *I) {
-    auto rvalueType = type.getSwiftRValueType();
+    checkLegalSILType(F, type.getSwiftRValueType(), I);
+  }
+
+  /// Check that the given type is a legal SIL value type.
+  void checkLegalSILType(SILFunction *F, CanType rvalueType, SILInstruction *I) {
+    // These types should have been removed by lowering.
     require(!isa<LValueType>(rvalueType),
             "l-value types are not legal in SIL");
     require(!isa<AnyFunctionType>(rvalueType),
             "AST function types are not legal in SIL");
+
+    // Tuples should have had their element lowered.
+    if (auto tuple = dyn_cast<TupleType>(rvalueType)) {
+      for (auto eltTy : tuple.getElementTypes()) {
+        checkLegalSILType(F, eltTy, I);
+      }
+      return;
+    }
+
+    // Optionals should have had their objects lowered.
+    OptionalTypeKind optKind;
+    if (auto objectType = rvalueType.getAnyOptionalObjectType(optKind)) {
+      require(optKind == OTK_Optional,
+              "ImplicitlyUnwrappedOptional is not legal in SIL values");
+      return checkLegalSILType(F, objectType, I);
+    }
+
+    // Metatypes should have explicit representations.
+    if (auto metatype = dyn_cast<AnyMetatypeType>(rvalueType)) {
+      require(metatype->hasRepresentation(),
+              "metatypes in SIL must have a representation");;
+      // fallthrough for archetype check
+    }
 
     rvalueType.visit([&](Type t) {
       auto *A = dyn_cast<ArchetypeType>(t.getPointer());
@@ -660,7 +679,18 @@ public:
 
   void checkAllocRefInst(AllocRefInst *AI) {
     requireReferenceValue(AI, "Result of alloc_ref");
+    require(AI->isObjC() || AI->getType().getClassOrBoundGenericClass(),
+            "alloc_ref must allocate class");
     verifyOpenedArchetype(AI, AI->getType().getSwiftRValueType());
+    auto Types = AI->getTailAllocatedTypes();
+    auto Counts = AI->getTailAllocatedCounts();
+    unsigned NumTypes = Types.size();
+    require(NumTypes == Counts.size(), "Mismatching types and counts");
+    for (unsigned Idx = 0; Idx < NumTypes; ++Idx) {
+      verifyOpenedArchetype(AI, Types[Idx].getSwiftRValueType());
+      require(Counts[Idx].get()->getType().is<BuiltinIntegerType>(),
+              "count needs integer type");
+    }
   }
 
   void checkAllocRefDynamicInst(AllocRefDynamicInst *ARDI) {
@@ -1577,6 +1607,12 @@ public:
             "index_addr index must be of a builtin integer type");
   }
 
+  void checkTailAddrInst(TailAddrInst *IAI) {
+    require(IAI->getType().isAddress(), "tail_addr must produce an address");
+    require(IAI->getIndex()->getType().is<BuiltinIntegerType>(),
+            "tail_addr index must be of a builtin integer type");
+  }
+
   void checkIndexRawPointerInst(IndexRawPointerInst *IAI) {
     require(IAI->getType().is<BuiltinRawPointerType>(),
             "index_raw_pointer must produce a RawPointer");
@@ -1682,6 +1718,15 @@ public:
     EI->getFieldNo();  // Make sure we can access the field without crashing.
   }
 
+  void checkRefTailAddrInst(RefTailAddrInst *RTAI) {
+    requireReferenceValue(RTAI->getOperand(), "Operand of ref_tail_addr");
+    require(RTAI->getType().isAddress(),
+            "result of ref_tail_addr must be lvalue");
+    SILType operandTy = RTAI->getOperand()->getType();
+    ClassDecl *cd = operandTy.getClassOrBoundGenericClass();
+    require(cd, "ref_tail_addr operand must be a class instance");
+  }
+  
   SILType getMethodSelfType(CanSILFunctionType ft) {
     return ft->getParameters().back().getSILType();
   }
@@ -1757,9 +1802,11 @@ public:
     auto methodTy = constantInfo.SILFnType;
 
     // Map interface types to archetypes.
-    if (auto *params = constantInfo.ContextGenericParams)
-      methodTy = methodTy->substGenericArgs(F.getModule(), M,
-                                            params->getForwardingSubstitutions(C));
+    if (auto *env = constantInfo.GenericEnv) {
+      auto sig = constantInfo.SILFnType->getGenericSignature();
+      auto subs = env->getForwardingSubstitutions(M, sig);
+      methodTy = methodTy->substGenericArgs(F.getModule(), M, subs);
+    }
     assert(!methodTy->isPolymorphic());
 
     // Replace Self parameter with type of 'self' at the call site.
@@ -3306,13 +3353,13 @@ public:
 
     // Make sure that our SILFunction only has context generic params if our
     // SILFunctionType is non-polymorphic.
-    if (F->getContextGenericParams()) {
+    if (F->getGenericEnvironment()) {
       require(FTy->isPolymorphic(),
-              "non-generic function definitions cannot have context "
-              "archetypes");
+              "non-generic function definitions cannot have a "
+              "generic environment");
     } else {
       require(!FTy->isPolymorphic(),
-              "generic function definition must have context archetypes");
+              "generic function definition must have a generic environment");
     }
 
     // Otherwise, verify the body of the function.

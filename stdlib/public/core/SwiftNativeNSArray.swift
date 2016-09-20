@@ -131,7 +131,7 @@ extension _SwiftNativeNSArrayWithContiguousStorage : _NSArrayCore {
   // operations on it.
   //
   // Do not access this property directly.
-  internal var _heapBufferBridged_DoNotUse: AnyObject? = nil
+  internal var _heapBufferBridged_DoNotUse: AnyObject?
 
   // When this class is allocated inline, this property can become a
   // computed one.
@@ -171,7 +171,7 @@ extension _SwiftNativeNSArrayWithContiguousStorage : _NSArrayCore {
   internal override func withUnsafeBufferOfObjects<R>(
     _ body: (UnsafeBufferPointer<AnyObject>) throws -> R
   ) rethrows -> R {
-    repeat {
+    while true {
       var buffer: UnsafeBufferPointer<AnyObject>
       
       // If we've already got a buffer of bridged objects, just use it
@@ -206,7 +206,6 @@ extension _SwiftNativeNSArrayWithContiguousStorage : _NSArrayCore {
       defer { _fixLifetime(self) }
       return try body(buffer)
     }
-    while true
   }
 
   /// Returns the number of elements in the array.
@@ -233,6 +232,12 @@ class _SwiftNativeNSArrayWithContiguousStorage {}
 internal class _ContiguousArrayStorageBase
   : _SwiftNativeNSArrayWithContiguousStorage {
 
+  final var countAndCapacity: _ArrayBody
+
+  init(_doNotCallMeBase: ()) {
+    _sanityCheckFailure("creating instance of _ContiguousArrayStorageBase")
+  }
+  
 #if _runtime(_ObjC)
   internal override func withUnsafeBufferOfObjects<R>(
     _ body: (UnsafeBufferPointer<AnyObject>) throws -> R

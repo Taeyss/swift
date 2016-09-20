@@ -312,12 +312,113 @@ static unsigned countDistinctOverloads(ArrayRef<OverloadChoice> choices) {
 
 /// \brief Determine the name of the overload in a set of overload choices.
 static DeclName getOverloadChoiceName(ArrayRef<OverloadChoice> choices) {
+  DeclName name;
   for (auto choice : choices) {
-    if (choice.isDecl())
-      return choice.getDecl()->getFullName();
+    if (!choice.isDecl())
+      continue;
+
+    DeclName nextName = choice.getDecl()->getFullName();
+    if (!name) {
+      name = nextName;
+      continue;
+    }
+
+    if (name != nextName) {
+      // Assume all choices have the same base name and only differ in
+      // argument labels. This may not be a great assumption, but we don't
+      // really have a way to recover for diagnostics otherwise.
+      return name.getBaseName();
+    }
   }
 
-  return DeclName();
+  return name;
+}
+
+/// Returns true if any diagnostics were emitted.
+static bool
+tryDiagnoseTrailingClosureAmbiguity(TypeChecker &tc, const Expr *expr,
+                                    ArrayRef<OverloadChoice> choices) {
+  auto *callExpr = dyn_cast<CallExpr>(expr);
+  if (!callExpr)
+    return false;
+  if (!callExpr->hasTrailingClosure())
+    return false;
+
+  llvm::SmallMapVector<Identifier, const ValueDecl *, 8> choicesByLabel;
+  for (const OverloadChoice &choice : choices) {
+    auto *callee = dyn_cast<AbstractFunctionDecl>(choice.getDecl());
+    if (!callee)
+      return false;
+
+    const ParameterList *paramList = callee->getParameterLists().back();
+    const ParamDecl *param = paramList->getArray().back();
+
+    // Sanity-check that the trailing closure corresponds to this parameter.
+    if (!param->getType()->is<AnyFunctionType>())
+      return false;
+
+    Identifier trailingClosureLabel = param->getArgumentName();
+    auto &choiceForLabel = choicesByLabel[trailingClosureLabel];
+
+    // FIXME: Cargo-culted from diagnoseAmbiguity: apparently the same decl can
+    // appear more than once?
+    if (choiceForLabel == callee)
+      continue;
+
+    // If just providing the trailing closure label won't solve the ambiguity,
+    // don't bother offering the fix-it.
+    if (choiceForLabel != nullptr)
+      return false;
+
+    choiceForLabel = callee;
+  }
+
+  // If we got here, then all of the choices have unique labels. Offer them in
+  // order.
+  SourceManager &sourceMgr = tc.Context.SourceMgr;
+  SourceLoc replaceStartLoc;
+  SourceLoc closureStartLoc;
+  bool hasOtherArgs, needsParens;
+  if (auto tupleArgs = dyn_cast<TupleExpr>(callExpr->getArg())) {
+    assert(tupleArgs->getNumElements() >= 2);
+    const Expr *lastBeforeClosure = tupleArgs->getElements().drop_back().back();
+    replaceStartLoc =
+        Lexer::getLocForEndOfToken(sourceMgr, lastBeforeClosure->getEndLoc());
+    closureStartLoc = tupleArgs->getElements().back()->getStartLoc();
+    hasOtherArgs = true;
+    needsParens = false;
+  } else {
+    auto parenArgs = cast<ParenExpr>(callExpr->getArg());
+    replaceStartLoc = parenArgs->getRParenLoc();
+    closureStartLoc = parenArgs->getSubExpr()->getStartLoc();
+    hasOtherArgs = false;
+    needsParens = parenArgs->getRParenLoc().isInvalid();
+  }
+  if (!replaceStartLoc.isValid()) {
+    assert(callExpr->getFn()->getEndLoc().isValid());
+    replaceStartLoc =
+        Lexer::getLocForEndOfToken(sourceMgr, callExpr->getFn()->getEndLoc());
+  }
+
+  for (const auto &choicePair : choicesByLabel) {
+    SmallString<64> insertionString;
+    if (needsParens)
+      insertionString += "(";
+    else if (hasOtherArgs)
+      insertionString += ", ";
+
+    if (!choicePair.first.empty()) {
+      insertionString += choicePair.first.str();
+      insertionString += ": ";
+    }
+
+    tc.diagnose(expr->getLoc(), diag::ambiguous_because_of_trailing_closure,
+                choicePair.first.empty(), choicePair.second->getFullName())
+      .fixItReplaceChars(replaceStartLoc, closureStartLoc, insertionString)
+      .fixItInsertAfter(callExpr->getEndLoc(), ")");
+  }
+
+  return true;
 }
 
 static bool diagnoseAmbiguity(ConstraintSystem &cs,
@@ -410,9 +511,12 @@ static bool diagnoseAmbiguity(ConstraintSystem &cs,
                                   : diag::ambiguous_decl_ref,
                 name);
 
+    if (tryDiagnoseTrailingClosureAmbiguity(tc, expr, overload.choices))
+      return true;
+
     // Emit candidates.  Use a SmallPtrSet to make sure only emit a particular
     // candidate once.  FIXME: Why is one candidate getting into the overload
-    // set multiple times?
+    // set multiple times? (See also tryDiagnoseTrailingClosureAmbiguity.)
     SmallPtrSet<Decl*, 8> EmittedDecls;
     for (auto choice : overload.choices) {
       switch (choice.getKind()) {
@@ -1982,6 +2086,7 @@ private:
 
   bool visitExpr(Expr *E);
   bool visitIdentityExpr(IdentityExpr *E);
+  bool visitTryExpr(TryExpr *E);
   bool visitTupleExpr(TupleExpr *E);
   
   bool visitUnresolvedMemberExpr(UnresolvedMemberExpr *E);
@@ -2928,6 +3033,27 @@ bool FailureDiagnosis::diagnoseGeneralConversionFailure(Constraint *constraint){
     }
     return true;
   }
+
+  // Due to migration reasons, types used to conform to BooleanType, which
+  // contain a member var 'boolValue', now does not convert to Bool. This block
+  // tries to add a specific diagnosis/fixit to explicitly invoke 'boolValue'.
+  if (toType->isBool()) {
+    auto LookupResult = CS->TC.lookupMember(CS->DC, fromType,
+      DeclName(CS->TC.Context.getIdentifier("boolValue")));
+    if (!LookupResult.empty()) {
+      if (isa<VarDecl>(LookupResult.begin()->Decl)) {
+        if (anchor->canAppendCallParentheses())
+          diagnose(anchor->getLoc(), diag::types_not_convertible_use_bool_value,
+                   fromType, toType).fixItInsertAfter(anchor->getEndLoc(),
+                                                      ".boolValue");
+        else
+          diagnose(anchor->getLoc(), diag::types_not_convertible_use_bool_value,
+            fromType, toType).fixItInsert(anchor->getStartLoc(), "(").
+              fixItInsertAfter(anchor->getEndLoc(), ").boolValue");
+        return true;
+      }
+    }
+  }
   
   diagnose(anchor->getLoc(), diag::types_not_convertible,
            constraint->getKind() == ConstraintKind::Subtype,
@@ -3149,6 +3275,17 @@ static void eraseOpenedExistentials(Expr *&expr) {
         assert(value != OpenExistentials.end() &&
                "didn't see this OVE in a containing OpenExistentialExpr?");
         return { true, value->second };
+      }
+
+      // Handle collection upcasts specially so that we don't blow up on
+      // their embedded OVEs.
+      if (auto CDE = dyn_cast<CollectionUpcastConversionExpr>(expr)) {
+        if (auto result = CDE->getSubExpr()->walk(*this)) {
+          CDE->setSubExpr(result);
+          return { false, CDE };
+        } else {
+          return { true, CDE };
+        }
       }
       
       return { true, expr };
@@ -3990,6 +4127,12 @@ bool FailureDiagnosis::diagnoseContextualConversionError() {
                                                 CS))
     return true;
 
+  // Don't attempt fixits if we have an unsolved type variable, since
+  // the recovery path's recursion into the type checker via typeCheckCast()
+  // will confuse matters.
+  if (exprType->hasTypeVariable())
+    return false;
+
   // When complaining about conversion to a protocol type, complain about
   // conformance instead of "conversion".
   if (contextualType->is<ProtocolType>() ||
@@ -4029,6 +4172,8 @@ bool FailureDiagnosis::diagnoseContextualConversionError() {
   case CTP_DictionaryKey:
   case CTP_DictionaryValue:
   case CTP_AssignSource:
+  case CTP_Initialization:
+  case CTP_ReturnStmt:
     tryRawRepresentableFixIts(diag, CS, exprType, contextualType,
                               KnownProtocolKind::ExpressibleByIntegerLiteral,
                               expr) ||
@@ -5007,6 +5152,10 @@ static bool isCastToTypedPointer(ASTContext &Ctx, const Expr *Fn,
   auto ArgType = ParenExp->getSubExpr()->getType();
   if (InitType.isNull() || ArgType.isNull())
     return false;
+
+  // unwrap one level of Optional
+  if (auto ArgOptType = ArgType->getOptionalObjectType())
+    ArgType = ArgOptType;
 
   auto *InitNom = InitType->getAnyNominal();
   if (!InitNom)
@@ -6030,7 +6179,7 @@ bool FailureDiagnosis::visitUnresolvedMemberExpr(UnresolvedMemberExpr *E) {
     return true;
   }
   
-  auto argumentTy = candidateInfo[0].getArgumentType();
+  auto candidateArgTy = candidateInfo[0].getArgumentType();
 
   // Depending on how we matched, produce tailored diagnostics.
   switch (candidateInfo.closeness) {
@@ -6049,9 +6198,9 @@ bool FailureDiagnosis::visitUnresolvedMemberExpr(UnresolvedMemberExpr *E) {
   case CC_ExactMatch: {        // This is a perfect match for the arguments.
 
     // If we have an exact match, then we must have an argument list, check it.
-    if (argumentTy) {
+    if (candidateArgTy) {
       assert(E->getArgument() && "Exact match without argument?");
-      if (!typeCheckArgumentChildIndependently(E->getArgument(), argumentTy,
+      if (!typeCheckArgumentChildIndependently(E->getArgument(), candidateArgTy,
                                                candidateInfo))
         return true;
     }
@@ -6085,16 +6234,16 @@ bool FailureDiagnosis::visitUnresolvedMemberExpr(UnresolvedMemberExpr *E) {
       
   case CC_ArgumentLabelMismatch: { // Argument labels are not correct.
     auto argExpr = typeCheckArgumentChildIndependently(E->getArgument(),
-                                                       argumentTy,
+                                                       candidateArgTy,
                                                        candidateInfo);
     if (!argExpr) return true;
 
     // Construct the actual expected argument labels that our candidate
     // expected.
-    assert(argumentTy &&
+    assert(candidateArgTy &&
            "Candidate must expect an argument to have a label mismatch");
     SmallVector<Identifier, 2> argLabelsScratch;
-    auto arguments = decomposeArgType(argumentTy,
+    auto arguments = decomposeArgType(candidateArgTy,
                                       candidateInfo[0].getArgumentLabels(
                                         argLabelsScratch));
     
@@ -6112,26 +6261,40 @@ bool FailureDiagnosis::visitUnresolvedMemberExpr(UnresolvedMemberExpr *E) {
   case CC_ArgumentCountMismatch:  // This candidate has wrong # arguments.
     // If we have no argument, the candidates must have expected one.
     if (!E->getArgument()) {
-      if (!argumentTy)
+      if (!candidateArgTy)
         return false; // Candidate must be incorrect for some other reason.
       
       // Pick one of the arguments that are expected as an exemplar.
-      diagnose(E->getNameLoc(), diag::expected_argument_in_contextual_member,
-               E->getName(), argumentTy);
+      if (candidateArgTy->isVoid()) {
+        // If this member is () -> T, suggest adding parentheses.
+        diagnose(E->getNameLoc(), diag::expected_parens_in_contextual_member,
+                 E->getName())
+          .fixItInsertAfter(E->getEndLoc(), "()");
+      } else {
+        diagnose(E->getNameLoc(), diag::expected_argument_in_contextual_member,
+                 E->getName(), candidateArgTy);
+      }
       return true;
     }
      
-    // If an argument value was specified, but this is a simple enumerator, then
-    // we fail with a nice error message.
-    auto argTy = candidateInfo[0].getArgumentType();
-    if (!argTy) {
-      diagnose(E->getNameLoc(), diag::unexpected_argument_in_contextual_member,
-               E->getName());
+    // If an argument value was specified, but this member expects no arguments,
+    // then we fail with a nice error message.
+    if (!candidateArgTy) {
+      if (E->getArgument()->getType()->isVoid()) {
+        diagnose(E->getNameLoc(), diag::unexpected_parens_in_contextual_member,
+                 E->getName())
+          .fixItRemove(E->getArgument()->getSourceRange());
+      } else {
+        diagnose(E->getNameLoc(), diag::unexpected_argument_in_contextual_member,
+                 E->getName())
+          .highlight(E->getArgument()->getSourceRange());
+      }
       return true;
     }
 
-    assert(E->getArgument() && argTy && "Exact match without an argument?");
-    return !typeCheckArgumentChildIndependently(E->getArgument(), argTy,
+    assert(E->getArgument() && candidateArgTy &&
+           "Exact match without an argument?");
+    return !typeCheckArgumentChildIndependently(E->getArgument(), candidateArgTy,
                                                 candidateInfo);
   }
 
@@ -6243,6 +6406,12 @@ bool FailureDiagnosis::visitIdentityExpr(IdentityExpr *E) {
   return false;
 }
 
+/// A TryExpr doesn't change it's argument, nor does it change the contextual
+/// type.
+bool FailureDiagnosis::visitTryExpr(TryExpr *E) {
+  return visit(E->getSubExpr());
+}
+
 bool FailureDiagnosis::visitExpr(Expr *E) {
   // Check each of our immediate children to see if any of them are
   // independently invalid.
@@ -6297,7 +6466,7 @@ void ConstraintSystem::diagnoseFailureForExpr(Expr *expr) {
   // inconsistent state.
   simplify(/*ContinueAfterFailures*/true);
 
-  // Look through RebindSelfInConstructorExpr to avoid weird sema issues.
+  // Look through RebindSelfInConstructorExpr to avoid weird Sema issues.
   if (auto *RB = dyn_cast<RebindSelfInConstructorExpr>(expr))
     expr = RB->getSubExpr();
   

@@ -1,4 +1,4 @@
-//===----------------------------------------------------------------------===//
+//===------------------------------------------------------------*- C++ -*-===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -13,14 +13,15 @@
 #ifndef SWIFT_RUNTIME_SWIFT_HASHABLE_SUPPORT_H
 #define SWIFT_RUNTIME_SWIFT_HASHABLE_SUPPORT_H
 
+#include "swift/Runtime/Config.h"
 #include "swift/Runtime/Metadata.h"
 #include <stdint.h>
 
 namespace swift {
 namespace hashable_support {
 
-/// The name demangles to "protocol descriptor for Swift.Hashable".
-extern "C" const ProtocolDescriptor _TMps8Hashable;
+extern "C" const ProtocolDescriptor HashableProtocolDescriptor
+  __asm__(SWIFT_QUOTED_SYMBOL_NAME(_TMps8Hashable));
 
 struct HashableWitnessTable;
 

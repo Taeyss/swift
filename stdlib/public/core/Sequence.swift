@@ -334,7 +334,8 @@ public protocol Sequence {
 
   /// A type that represents a subsequence of some of the sequence's elements.
   associatedtype SubSequence
-  // FIXME(compiler limitation):
+  // FIXME(ABI)#104 (Recursive Protocol Constraints):
+  // FIXME(ABI)#105 (Associated Types with where clauses):
   // associatedtype SubSequence : Sequence
   //   where
   //   Iterator.Element == SubSequence.Iterator.Element,
@@ -590,17 +591,6 @@ public protocol Sequence {
     whereSeparator isSeparator: (Iterator.Element) throws -> Bool
   ) rethrows -> [SubSequence]
 
-  /// Returns the first element of the sequence that satisfies the given
-  /// predicate or nil if no such element is found.
-  ///
-  /// - Parameter predicate: A closure that takes an element of the
-  ///   sequence as its argument and returns a Boolean value indicating
-  ///   whether the element is a match.
-  /// - Returns: The first match or `nil` if there was no match.
-  func first(
-    where predicate: (Iterator.Element) throws -> Bool
-  ) rethrows -> Iterator.Element?
-
   func _customContainsEquatableElement(
     _ element: Iterator.Element
   ) -> Bool?
@@ -721,6 +711,14 @@ internal class _PrefixSequence<Base : IteratorProtocol>
         maxLength: Swift.min(maxLength, self._maxLength),
         taken: _taken))
   }
+  
+  internal func drop(
+    while predicate: (Base.Element) throws -> Bool
+  ) rethrows -> AnySequence<Base.Element> {
+    return try AnySequence(
+      _DropWhileSequence(
+        iterator: _iterator, nextElement: nil, predicate: predicate))
+  }
 }
 
 /// A sequence that lazily consumes and drops `n` elements from an underlying
@@ -827,7 +825,7 @@ extension Sequence {
   ///     print(shortNames)
   ///     // Prints "["Kim", "Karl"]"
   ///
-  /// - Parameter shouldInclude: A closure that takes an element of the
+  /// - Parameter isIncluded: A closure that takes an element of the
   ///   sequence as its argument and returns a Boolean value indicating
   ///   whether the element should be included in the returned array.
   /// - Returns: An array of the elements that `includeElement` allowed.
@@ -1060,7 +1058,7 @@ extension Sequence {
   public func first(
     where predicate: (Iterator.Element) throws -> Bool
   ) rethrows -> Iterator.Element? {
-    var foundElement: Iterator.Element? = nil
+    var foundElement: Iterator.Element?
     do {
       try self.forEach {
         if try predicate($0) {
@@ -1253,8 +1251,8 @@ extension Sequence where
   ///
   /// - Parameter predicate: A closure that takes an element of the
   ///   sequence as its argument and returns `true` if the element should
-  ///		be included or `false` if it should be excluded. Once the predicate
-  ///		returns `false` it will not be called again.
+  ///   be included or `false` if it should be excluded. Once the predicate
+  ///   returns `false` it will not be called again.
   ///
   /// - Complexity: O(*n*), where *n* is the length of the collection.
   public func prefix(

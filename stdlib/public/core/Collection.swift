@@ -16,9 +16,11 @@
 /// In most cases, it's best to ignore this protocol and use the `Collection`
 /// protocol instead, because it has a more complete interface.
 @available(*, deprecated, message: "it will be removed in Swift 4.0.  Please use 'Collection' instead")
-public protocol IndexableBase {
-  // FIXME(ABI)(compiler limitation): there is no reason for this protocol
+public typealias IndexableBase = _IndexableBase
+public protocol _IndexableBase {
+  // FIXME(ABI)#24 (Recursive Protocol Constraints): there is no reason for this protocol
   // to exist apart from missing compiler features that we emulate with it.
+  // rdar://problem/20531108
   //
   // This protocol is almost an implementation detail of the standard
   // library; it is used to deduce things like the `SubSequence` and
@@ -115,6 +117,8 @@ public protocol IndexableBase {
   /// - Complexity: O(1).
   func _failEarlyRangeCheck(_ index: Index, bounds: Range<Index>)
 
+  func _failEarlyRangeCheck(_ index: Index, bounds: ClosedRange<Index>)
+
   /// Performs a range check in O(1), or a no-op when a range check is not
   /// implementable in O(1).
   ///
@@ -158,7 +162,8 @@ public protocol IndexableBase {
 /// In most cases, it's best to ignore this protocol and use the `Collection`
 /// protocol instead, because it has a more complete interface.
 @available(*, deprecated, message: "it will be removed in Swift 4.0.  Please use 'Collection' instead")
-public protocol Indexable : IndexableBase {
+public typealias Indexable = _Indexable
+public protocol _Indexable : _IndexableBase {
   /// A type used to represent the number of steps between two indices, where
   /// one value is reachable from the other.
   ///
@@ -353,8 +358,9 @@ public protocol Indexable : IndexableBase {
 ///     // Prints "15.0"
 ///     // Prints "20.0"
 public struct IndexingIterator<
-  Elements : IndexableBase
-  // FIXME(compiler limitation):
+  Elements : _IndexableBase
+  // FIXME(ABI)#97 (Recursive Protocol Constraints):
+  // Should be written as:
   // Elements : Collection
 > : IteratorProtocol, Sequence {
 
@@ -529,7 +535,7 @@ public struct IndexingIterator<
 /// forward or bidirectional collection must traverse the entire collection to
 /// count the number of contained elements, accessing its `count` property is
 /// an O(*n*) operation.
-public protocol Collection : Indexable, Sequence {
+public protocol Collection : _Indexable, Sequence {
   /// A type that can represent the number of steps between a pair of
   /// indices.
   associatedtype IndexDistance : SignedInteger = Int
@@ -554,8 +560,9 @@ public protocol Collection : Indexable, Sequence {
   /// This associated type appears as a requirement in the `Sequence`
   /// protocol, but it is restated here with stricter constraints. In a
   /// collection, the subsequence should also conform to `Collection`.
-  associatedtype SubSequence : IndexableBase, Sequence = Slice<Self>
-  // FIXME(compiler limitation):
+  associatedtype SubSequence : _IndexableBase, Sequence = Slice<Self>
+  // FIXME(ABI)#98 (Recursive Protocol Constraints):
+  // FIXME(ABI)#99 (Associated Types with where clauses):
   // associatedtype SubSequence : Collection
   //   where
   //   Iterator.Element == SubSequence.Iterator.Element,
@@ -613,9 +620,10 @@ public protocol Collection : Indexable, Sequence {
 
   /// A type that can represent the indices that are valid for subscripting the
   /// collection, in ascending order.
-  associatedtype Indices : IndexableBase, Sequence = DefaultIndices<Self>
+  associatedtype Indices : _Indexable, Sequence = DefaultIndices<Self>
 
-  // FIXME(compiler limitation):
+  // FIXME(ABI)#68 (Associated Types with where clauses):
+  // FIXME(ABI)#100 (Recursive Protocol Constraints):
   // associatedtype Indices : Collection
   //   where
   //   Indices.Iterator.Element == Index,
@@ -858,7 +866,7 @@ public protocol Collection : Indexable, Sequence {
 }
 
 /// Default implementation for forward collections.
-extension Indexable {
+extension _Indexable {
   /// Replaces the given index with its successor.
   ///
   /// - Parameter i: A valid index of the collection. `i` must be less than
@@ -876,6 +884,16 @@ extension Indexable {
     _precondition(
       index < bounds.upperBound,
       "out of bounds: index >= endIndex")
+  }
+
+  public func _failEarlyRangeCheck(_ index: Index, bounds: ClosedRange<Index>) {
+    // FIXME: swift-3-indexing-model: tests.
+    _precondition(
+      bounds.lowerBound <= index,
+      "out of bounds: index < startIndex")
+    _precondition(
+      index <= bounds.upperBound,
+      "out of bounds: index > endIndex")
   }
 
   public func _failEarlyRangeCheck(_ range: Range<Index>, bounds: Range<Index>) {
@@ -1330,7 +1348,7 @@ extension Collection {
   ///
   /// - Complexity: O(*n*), where *n* is the length of the collection.
   public func drop(
-    while predicate: @noescape (Iterator.Element) throws -> Bool
+    while predicate: (Iterator.Element) throws -> Bool
   ) rethrows -> SubSequence {
     var start = startIndex
     while try start != endIndex && predicate(self[start]) {
@@ -1374,7 +1392,7 @@ extension Collection {
   ///
   /// - Complexity: O(*n*), where *n* is the length of the collection.
   public func prefix(
-    while predicate: @noescape (Iterator.Element) throws -> Bool
+    while predicate: (Iterator.Element) throws -> Bool
   ) rethrows -> SubSequence {
     var end = startIndex
     while try end != endIndex && predicate(self[end]) {
@@ -1701,7 +1719,7 @@ extension Collection {
 public enum Bit {}
 
 @available(*, unavailable, renamed: "IndexingIterator")
-public struct IndexingGenerator<Elements : IndexableBase> {}
+public struct IndexingGenerator<Elements : _IndexableBase> {}
 
 @available(*, unavailable, renamed: "Collection")
 public typealias CollectionType = Collection

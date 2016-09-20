@@ -214,7 +214,6 @@ namespace {
                                              SGFContext C);
     RValue visitIfExpr(IfExpr *E, SGFContext C);
     
-    RValue visitDefaultValueExpr(DefaultValueExpr *E, SGFContext C);
     RValue visitAssignExpr(AssignExpr *E, SGFContext C);
     RValue visitEnumIsCaseExpr(EnumIsCaseExpr *E, SGFContext C);
 
@@ -978,21 +977,15 @@ visitCollectionUpcastConversionExpr(CollectionUpcastConversionExpr *E,
   auto toCollection = cast<BoundGenericStructType>(
                         E->getType()->getCanonicalType());
 
-  bool bridgesToObjC = E->bridgesToObjC();
-  if (SGF.getASTContext().LangOpts.EnableExperimentalCollectionCasts)
-    bridgesToObjC = false;
-
   // Get the intrinsic function.
   auto &ctx = SGF.getASTContext();
   FuncDecl *fn = nullptr;
   if (fromCollection->getDecl() == ctx.getArrayDecl()) {
     fn = SGF.SGM.getArrayForceCast(loc);
   } else if (fromCollection->getDecl() == ctx.getDictionaryDecl()) {
-    fn = bridgesToObjC ? SGF.SGM.getDictionaryBridgeToObjectiveC(loc)
-                       : SGF.SGM.getDictionaryUpCast(loc);
+    fn = SGF.SGM.getDictionaryUpCast(loc);
   } else if (fromCollection->getDecl() == ctx.getSetDecl()) {
-    fn = bridgesToObjC ? SGF.SGM.getSetBridgeToObjectiveC(loc)
-                       : SGF.SGM.getSetUpCast(loc);
+    fn = SGF.SGM.getSetUpCast(loc);
   } else {
     llvm_unreachable("unsupported collection upcast kind");
   }
@@ -1000,14 +993,14 @@ visitCollectionUpcastConversionExpr(CollectionUpcastConversionExpr *E,
   // This will have been diagnosed by the accessors above.
   if (!fn) return SGF.emitUndefRValue(E, E->getType());
   
-  auto fnArcheTypes = fn->getGenericParams()->getPrimaryArchetypes();
+  auto fnGenericParams = fn->getGenericParams()->getParams();
   auto fromSubsts = fromCollection->gatherAllSubstitutions(
       SGF.SGM.SwiftModule, nullptr);
   auto toSubsts = toCollection->gatherAllSubstitutions(
       SGF.SGM.SwiftModule, nullptr);
-  assert(fnArcheTypes.size() == fromSubsts.size() + toSubsts.size() &&
+  assert(fnGenericParams.size() == fromSubsts.size() + toSubsts.size() &&
          "wrong number of generic collection parameters");
-  (void) fnArcheTypes;
+  (void) fnGenericParams;
   
   // Form type parameter substitutions.
   SmallVector<Substitution, 4> subs;
@@ -1037,9 +1030,7 @@ static ManagedValue convertCFunctionSignature(SILGenFunction &SGF,
 
   // We're converting between C function pointer types. They better be
   // ABI-compatible, since we can't emit a thunk.
-  switch (SGF.SGM.Types.checkForABIDifferences(
-              loweredResultTy.getSwiftRValueType(),
-              loweredDestTy.getSwiftRValueType())) {
+  switch (SGF.SGM.Types.checkForABIDifferences(loweredResultTy, loweredDestTy)){
   case TypeConverter::ABIDifference::Trivial:
     result = fnEmitter();
     assert(result.getType() == loweredResultTy);
@@ -1439,10 +1430,8 @@ VarargsInfo Lowering::emitBeginVarargs(SILGenFunction &gen, SILLocation loc,
                                        CanType baseTy, CanType arrayTy,
                                        unsigned numElements) {
   // Reabstract the base type against the array element type.
-  AbstractionPattern baseAbstraction(
-    arrayTy->getNominalOrBoundGenericNominal()
-           ->getGenericParams()->getPrimaryArchetypes()[0]);
-  
+  auto baseAbstraction = AbstractionPattern::getOpaque();
+
   // Allocate the array.
   SILValue numEltsVal = gen.B.createIntegerLiteral(loc,
                              SILType::getBuiltinWordType(gen.getASTContext()),
@@ -2051,7 +2040,7 @@ visitMagicIdentifierLiteralExpr(MagicIdentifierLiteralExpr *E, SGFContext C) {
     auto UnsafeRawPointer = SGF.getASTContext().getUnsafeRawPointerDecl();
     auto UnsafeRawPtrTy =
       SGF.getLoweredType(UnsafeRawPointer->getDeclaredInterfaceType());
-    SILType BulitinRawPtrTy = SILType::getRawPointerType(SGF.getASTContext());
+    SILType BuiltinRawPtrTy = SILType::getRawPointerType(SGF.getASTContext());
 
 
     auto DSOGlobal = SGF.SGM.M.lookUpGlobalVariable("__dso_handle");
@@ -2059,11 +2048,11 @@ visitMagicIdentifierLiteralExpr(MagicIdentifierLiteralExpr *E, SGFContext C) {
       DSOGlobal = SILGlobalVariable::create(SGF.SGM.M,
                                             SILLinkage::HiddenExternal,
                                             IsNotFragile, "__dso_handle",
-                                            BulitinRawPtrTy);
+                                            BuiltinRawPtrTy);
     auto DSOAddr = SGF.B.createGlobalAddr(SILLoc, DSOGlobal);
 
     auto DSOPointer = SGF.B.createAddressToPointer(SILLoc, DSOAddr,
-                                                   BulitinRawPtrTy);
+                                                   BuiltinRawPtrTy);
 
     auto UnsafeRawPtrStruct = SGF.B.createStruct(SILLoc, UnsafeRawPtrTy,
                                                  { DSOPointer });
@@ -2084,9 +2073,7 @@ static ManagedValue flattenOptional(SILGenFunction &SGF, SILLocation loc,
   auto isNotPresentBB = SGF.createBasicBlock();
   auto isPresentBB = SGF.createBasicBlock();
 
-  OptionalTypeKind unused;
-  SILType resultTy = optVal.getType().getAnyOptionalObjectType(SGF.SGM.M,
-                                                               unused);
+  SILType resultTy = optVal.getType().getAnyOptionalObjectType();
   auto &resultTL = SGF.getTypeLowering(resultTy);
   assert(resultTy.getSwiftRValueType().getAnyOptionalObjectType() &&
          "input was not a nested optional value");
@@ -2602,10 +2589,6 @@ RValue RValueEmitter::visitIfExpr(IfExpr *E, SGFContext C) {
     return RValue(SGF, E,
                   SGF.manageBufferForExprResult(resultAddr, lowering, C));
   }
-}
-
-RValue RValueEmitter::visitDefaultValueExpr(DefaultValueExpr *E, SGFContext C) {
-  return visit(E->getSubExpr(), C);
 }
 
 RValue SILGenFunction::emitEmptyTupleRValue(SILLocation loc,

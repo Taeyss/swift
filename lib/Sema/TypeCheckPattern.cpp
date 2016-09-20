@@ -18,7 +18,6 @@
 #include "TypeChecker.h"
 #include "GenericTypeResolver.h"
 #include "swift/Basic/StringExtras.h"
-#include "swift/AST/ExprHandle.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/NameLookup.h"
@@ -739,21 +738,21 @@ static bool validateParameterType(ParamDecl *decl, DeclContext *DC,
                                   TypeChecker &TC) {
   if (auto ty = decl->getTypeLoc().getType())
     return ty->is<ErrorType>();
-  
+
+  // If the element is a variadic parameter, resolve the parameter type as if
+  // it were in non-parameter position, since we want functions to be
+  // @escaping in this case.
+  auto elementOptions = (options |
+                         (decl->isVariadic() ? TR_VariadicFunctionInput
+                                             : TR_FunctionInput));
   bool hadError = TC.validateType(decl->getTypeLoc(), DC,
-                                  options|TR_FunctionInput, resolver);
+                                  elementOptions, resolver);
   
   Type Ty = decl->getTypeLoc().getType();
   if (decl->isVariadic() && !hadError) {
-    // If isn't legal to declare something both inout and variadic.
-    if (Ty->is<InOutType>()) {
-      TC.diagnose(decl->getStartLoc(), diag::inout_cant_be_variadic);
+    Ty = TC.getArraySliceType(decl->getStartLoc(), Ty);
+    if (Ty.isNull()) {
       hadError = true;
-    } else {
-      Ty = TC.getArraySliceType(decl->getStartLoc(), Ty);
-      if (Ty.isNull()) {
-        hadError = true;
-      }
     }
     decl->getTypeLoc().setType(Ty);
   }
@@ -1305,9 +1304,7 @@ bool TypeChecker::coercePatternToType(Pattern *&P, DeclContext *dc, Type type,
     // Valid checks.
     case CheckedCastKind::ArrayDowncast:
     case CheckedCastKind::DictionaryDowncast:
-    case CheckedCastKind::DictionaryDowncastBridged:
     case CheckedCastKind::SetDowncast:
-    case CheckedCastKind::SetDowncastBridged:
       return coercePatternViaConditionalDowncast(
                *this, P, dc, type,
                subOptions|TR_FromNonInferredPattern);
@@ -1457,8 +1454,10 @@ bool TypeChecker::coercePatternToType(Pattern *&P, DeclContext *dc, Type type,
 
   case PatternKind::OptionalSome: {
     auto *OP = cast<OptionalSomePattern>(P);
-    auto *enumDecl = type->getEnumOrBoundGenericEnum();
-    if (!enumDecl) {
+    OptionalTypeKind optionalKind;
+    Type elementType = type->getAnyOptionalObjectType(optionalKind);
+
+    if (elementType.isNull()) {
       auto diagID = diag::optional_element_pattern_not_valid_type;
       SourceLoc loc = OP->getQuestionLoc();
       // Produce tailored diagnostic for if/let and other conditions.
@@ -1471,35 +1470,10 @@ bool TypeChecker::coercePatternToType(Pattern *&P, DeclContext *dc, Type type,
       return true;
     }
 
-    // If the element decl was not resolved (because it was spelled without a
-    // type as `.Foo`), resolve it now that we have a type.
-    if (!OP->getElementDecl()) {
-      auto *element = lookupEnumMemberElement(*this, dc, type, Context.Id_some,
-                                              OP->getLoc());
-      if (!element) {
-        diagnose(OP->getLoc(), diag::enum_element_pattern_member_not_found,
-                 "Some", type);
-        return true;
-      }
-      OP->setElementDecl(element);
-    }
+    EnumElementDecl *elementDecl = Context.getOptionalSomeDecl(optionalKind);
+    assert(elementDecl && "missing optional some decl?!");
+    OP->setElementDecl(elementDecl);
 
-    EnumElementDecl *elt = OP->getElementDecl();
-    // Is the enum element actually part of the enum type we're matching?
-    if (elt->getParentEnum() != enumDecl) {
-      diagnose(OP->getLoc(), diag::enum_element_pattern_not_member_of_enum,
-               "Some", type);
-      return true;
-    }
-
-    // Check the subpattern & push the enum element type down onto it.
-    Type elementType;
-    if (elt->hasArgumentType())
-      elementType = type->getTypeOfMember(elt->getModuleContext(),
-                                          elt, this,
-                                          elt->getArgumentInterfaceType());
-    else
-      elementType = TupleType::getEmpty(Context);
     Pattern *sub = OP->getSubPattern();
     if (coercePatternToType(sub, dc, elementType,
                             subOptions|TR_FromNonInferredPattern|TR_EnumPatternPayload,
